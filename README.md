@@ -38,5 +38,5 @@ Current settings:
 This project sends the temperature of the room and rpm of the fan
 to ThingSpeak's cloud services for analytics. ThingSpeak sets a 
 limit for free users to 15 seconds. So I sent my data to only captures every 20 seconds. 
-The link to the ThingSpeak charts can be found below. 
-(https://thingspeak.com/channels/1247645)
+The link to the ThingSpeak charts can be found below. <br>
+https://thingspeak.com/channels/1247645 
