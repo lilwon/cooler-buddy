@@ -11,13 +11,13 @@ since that would take a lot of space.
 ## Project Info
 There are two modes for the fan: manual and auto.
 
-**Manual Mode (Overrides Auto):**
+**Manual Mode (Overrides Auto):** <br>
 If you put your finger over the touch sensor, you can manually
 change the speed of the fan. There are 3-speed settings: high, med, low. The only way to change the speed setting is to toggle through 
-the entire settings. 
+the entire settings. <br> 
 Ex: Start setting is default -> low -> med -> high -> default ...  
 
-**Auto Mode (Default Mode):**
+**Auto Mode (Default Mode):** <br>
 Auto mode reads the temperature of the room/environment and adjust
 its speed settings accordingly. 
 
