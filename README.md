@@ -33,6 +33,7 @@ Current settings:
 * Touch Sensor
 * Temperature Sensor
 * LED Light
+* PWM Fan
 
 ## Other
 This project sends the temperature of the room and rpm of the fan
