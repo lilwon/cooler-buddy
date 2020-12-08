@@ -1,143 +1,222 @@
-#include <WiFiEsp.h>
-#include <WiFiEspClient.h>
-#include <WiFiEspServer.h>
-#include <WiFiEspUdp.h>
+// Using ESP-01 to send AT commands to ThingSpeak
 
-#include <math.h>
+#include "ThingSpeak.h"
+#include "WiFiEsp.h"
 #include <Wire.h>
+#include <math.h>
 #include "rgb_lcd.h"
+
+#define FANPIN 3  // Arctic PWM Fan
+#define TEMPPIN A0 // Temp sensor
+#define TOUCHPIN 4 // touch sensor
+#define LEDPIN 7  // led light
+
+WiFiEspClient client; 
 
 #ifndef HAVE_HWSERIAL1
 #include "SoftwareSerial.h"
-SoftwareSerial Serial1(10, 11);
+SoftwareSerial esp(10, 11);
+#define ESP_BAUDRATE  19200
+#else
+#define ESP_BAUDRATE  115200 
 #endif
 
-// switching between 9 and 3 depends on TACH pin
-#define PWMPIN 3 // controls the PWM of fan
+int fanSetting = 0;
+rgb_lcd lcd; 
 
-// Set up the temp sensor
-int tempSensor = A0; 
-
-float temp; // show current temp in room
-
-char ssid[]= "X";
-char pass[] = "X";
-int status = WL_IDLE_STATUS; 
-char server[] = "X"; 
-
-// change to char*? 
-char get_request[300];
-// Initialize Ethernet client
-WiFiEspClient client;
-
-rgb_lcd lcd; // display lcd
+// data for ThingSpeak and other
+float temp; 
+int rpm; 
+unsigned long intr = 0; // interrupt timer
 
 void setup() {
   Serial.begin(115200);
- 
-  lcd.begin(16, 2);
-  lcd.print("Setup Fan");
+  //esp.begin(115200); // must set baudrate with esp.. 
 
-  // ESP8266 Wifi stuff
-  Serial1.begin(115200); 
-  WiFi.init(&Serial1);
-  // check for presence of shield
+  // Setting baudrate of esp
+  setEspBaudRate(ESP_BAUDRATE);
+
+  lcd.begin(16, 2); 
+  lcd.print("Fan Setup"); 
+  
+  // make fan speed low
+  pinMode(FANPIN, OUTPUT);
+  // reset the timers on Arduino board to change 25kHz
+  pwmFanSetup();
+
+  // Setup ESP8266
+  Serial.print("Searching for ESP8266");
+  WiFi.init(&esp);
+
   if ( WiFi.status() == WL_NO_SHIELD) {
     Serial.println("WiFi shield not present");
-    // dont continue
-    while (true);
+    // don't continue
+    while (true); 
   }
-  // atmpt to connect to wifi
-  while ( status != WL_CONNECTED) {
-    Serial.print("Attempting to connect to WPA SSID: ");
-    Serial.println(ssid);
-    // connect to wpa/wpa2 network
-    status = WiFi.begin(ssid, pass);
-  }
-  Serial.println("You're connected to the network");
-  printWifiStatus(); 
 
-  // now connect PinMode of fan
-  pinMode(PWMPIN, OUTPUT);
-  // fan is set to low, it will always continue running even if 
-  // there's no output bc connected fan pins..
-  analogWrite(PWMPIN, 0); // RPM = 230
-  delay(5000); // make sure NOTHING is spinning
+  Serial.println("Connected");
 
+  ThingSpeak.begin(client);
+
+  // Interrupt on PIN 2 tach
+  digitalWrite(2, HIGH); 
 }
 
-void loop() {  
-  temp = calcTemp(); 
-  Serial.print("Temperature (F): ");
-  Serial.println(temp);
+void loop() {
+  // check status of network
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.print("Attempting to connect to network: ");
+    Serial.println("");
+    while (WiFi.status() != WL_CONNECTED ) {
+      // testing if string works..
+      // WiFi.begin(SSID, PW) 
+      WiFi.begin("", ""); 
+      Serial.print("."); 
+      delay(5000); 
+    }
+    Serial.println("\nConnected."); 
+  }
 
+  // Start getting data! 
+  int touch = digitalRead(TOUCHPIN); // if it's touched.. 
+  // if touch sensor touched show confirmation on board. 
+  if ( touch == 1 ) {
+    digitalWrite(LEDPIN, HIGH); 
+    fanSetting++; // set fan setting + 1
+
+    if ( fanSetting > 3 ) {
+      fanSetting = 0; // reset the fan
+    }
+  }
+  else {
+    digitalWrite(LEDPIN, LOW); 
+  }
+  
+  calcTemp(); // get the temperature Sensor
+  Serial.print("Fan Setting: ");
+  Serial.println(fanSetting);   
+  Serial.print("Temp: ");
+  Serial.println(temp);
+    
   lcd.clear();
   lcd.print("Temp(F): ");
   lcd.print(temp);
 
-  if ( temp > 80.0 ) {
-    // 100% cycle 
-    analogWrite(PWMPIN, 255); //rpm = 1350
+  // Manual or auto
+  if (fanSetting > 0 ) {
+    manMode(fanSetting); 
   }
   else {
-    // 20% cycle
-    analogWrite(PWMPIN, 64);// rpm ~800
+    autoMode(temp);
   }
+    
+  calcRPM(); 
+  Serial.print("RPM: ");
+  Serial.println(rpm); 
 
-  // Connection to Server 
-  Serial.println();
-  
-  if (!client.connected() ) {
-    Serial.println("Starting connection to server...");
-    client.connect(server, 5000);
+  lcd.setCursor(0, 1);
+  lcd.print("RPM: ");
+  lcd.print(rpm); 
+
+  lcd.setCursor(10, 1);
+  lcd.print("Md: ");
+  lcd.print(fanSetting);
+
+  // Start sending data to ThingSpeak
+  // Set Fields with vals
+  ThingSpeak.setField(1, temp);
+  ThingSpeak.setField(2, rpm);
+
+  // Write to thingspeak channel
+  // ThingSpeak.writeFields(channelID, API)
+  int x = ThingSpeak.writeFields(, "");
+  // send HTTP 200
+  if ( x == 200 ) {
+    Serial.println("Successfully updated.");
   }
-
-  // Serial.println("Connected to server");
-  char tempVal[6];
-  dtostrf(temp, 3, 2, tempVal); 
-
-  // char tempHum[6] = "5.0";
-  
-  //sprintf(get_request,"GET /?var=%s HTTP/1.1\r\nHost: 3.15.181.173\r\nConnection: close \r\n\r\n", var);
-  //sprintf(get_request, "GET /?temp=%d HTTP/1.1\r\nHost: 3.15.181.173\r\nConnection: close \r\n\r\n", temp);
-  sprintf(get_request, "GET /?tempVal=%s HTTP/1.1\r\nHost: 3.15.181.173\r\nConnection: close \r\n\r\n", tempVal);
-
-  client.print(get_request);
-  delay(500);
-  while (client.available()) {
-    char c = client.read();
-    Serial.write(c);
+  else {
+    Serial.println("HTTP error code " + String(x)); 
   }
-  delay(10000);
+  // Free accounts get a 15s update.
+  delay(20000); 
 }
 
-// Calculates the temperature from thermistor to Celsius to Fahrenheit
-// Adapted from SEEED Grove from their thermistor sensor
-float calcTemp() {
-  int a = analogRead(tempSensor);
+// Used to setup 25kHz frequency to PWM Fan
+// Have to use the registers to reset clocks/timing
+void pwmFanSetup() {
+  TCCR2A = 0;
+  TCCR2B = 0;
+
+  TCCR2A |= ( 1 << COM2B1) | (1 << WGM21) | (1 << WGM20);
+  TCCR2B |= (1 << WGM22) | ( 1 << CS21); 
+
+  OCR2A = 255; // this controls MAX duty/pwm cycle
+  OCR2B = 0; // change this to control PWM speed
+}
+
+void calcTemp() {
+  int a = analogRead(TEMPPIN);
   float R = 1023.0/a-1.0; 
   R = 100000 * R; 
-
   // conv to temperature C
   float tempC = 1.0/(log(R/100000)/4275+1/298.15)-273.15; 
-  float tempF = (tempC * 1.8) + 32.0; 
-
-  return tempF; 
+  temp = (tempC * 1.8) + 32.0; // convert to F
 }
 
-// To print Wifi Status 
-void printWifiStatus() {
-  // print SSID 
-  Serial.print("SSID: ");
-  Serial.println(WiFi.SSID());
-  // print wifi shield ip adr
-  IPAddress ip = WiFi.localIP();
-  Serial.print("IP Address: ");
-  Serial.println(ip); 
+// calculate RPM
+void calcRPM() {
+  intr = pulseIn(2, HIGH); // get interrupt/tachometer 
+  rpm = ( 1000000 * 60 ) / (intr * 4 ); 
+}
 
-  // print received signal str
-  long rssi = WiFi.RSSI();
-  Serial.print("Signal strength (RSSI): ");
-  Serial.print(rssi);
-  Serial.println(" dBm");
+// Switch to manual setting
+// Overrides auto mode
+void manMode(int curFan ) {
+  if ( curFan == 3 ) {
+    OCR2B = 255; // max rpm'
+  }
+  else if ( curFan == 2 ) {
+    OCR2B = 192; // 75% duty cycle
+  }
+  else if ( curFan == 1 ) {
+    OCR2B = 128;  // 50% 
+  }  
+}
+
+// Automode, only reads by temperature. 
+void autoMode(float currentTemp) {
+  if ( currentTemp >= 90.0 ) {
+    OCR2B = 255; 
+  }
+  else if ( currentTemp >= 85 && currentTemp < 90 ) {
+    OCR2B = 192;
+  }
+    else if ( currentTemp > 80 && currentTemp < 85 ) {
+    OCR2B = 128;
+  }
+  else {
+    // default speed when nothing is set/used.
+    OCR2B = 64; // 25% duty cycle = default speed
+  }  
+}
+
+// This function attempts to set the ESP8266 baudrate. Boards with additional hardware serial ports
+// can use 115200, otherwise software serial is limited to 19200.
+void setEspBaudRate(unsigned long baudrate){
+  long rates[6] = {115200,74880,57600,38400,19200,9600};
+
+  Serial.print("Setting ESP8266 baudrate to ");
+  Serial.print(baudrate);
+  Serial.println("...");
+
+  for(int i = 0; i < 6; i++){
+    esp.begin(rates[i]);
+    delay(100);
+    esp.print("AT+UART_DEF=");
+    esp.print(baudrate);
+    esp.print(",8,1,0,0\r\n");
+    delay(100);  
+  }
+    
+  esp.begin(baudrate);
 }
